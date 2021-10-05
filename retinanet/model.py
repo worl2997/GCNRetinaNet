@@ -14,33 +14,36 @@ model_urls = {
     'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
-
+# code for branch test
 # Feature pyramid 구현
-class PyramidFeatures(nn.Module):
-    def __init__(self, C3_size, C4_size, C5_size, feature_size=256):
-        super(PyramidFeatures, self).__init__()
+class GraphFPN(nn.Module):
+    def __init__(self, num_GCN, feature_scale, feature_size=256):
+        super(GraphFPN, self).__init__()
 
-        # upsample C5 to get P5 from the FPN paper
-        self.P5_1 = nn.Conv2d(C5_size, feature_size, kernel_size=1, stride=1, padding=0)
-        self.P5_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P5_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        # add P5 elementwise to C4
-        self.P4_1 = nn.Conv2d(C4_size, feature_size, kernel_size=1, stride=1, padding=0)
-        self.P4_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-        self.P4_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        # add P4 elementwise to C3
-        self.P3_1 = nn.Conv2d(C3_size, feature_size, kernel_size=1, stride=1, padding=0)
-        self.P3_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
+'''
+    # upsample C5 to get P5 from the FPN paper
+    self.P5_1 = nn.Conv2d(C5_size, feature_size, kernel_size=1, stride=1, padding=0)
+    self.P5_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
+    self.P5_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        # "P6 is obtained via a 3x3 stride-2 conv on C5"
-        self.P6 = nn.Conv2d(C5_size, feature_size, kernel_size=3, stride=2, padding=1)
+    # add P5 elementwise to C4
+    self.P4_1 = nn.Conv2d(C4_size, feature_size, kernel_size=1, stride=1, padding=0)
+    self.P4_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
+    self.P4_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
-        # "P7 is computed by applying ReLU followed by a 3x3 stride-2 conv on P6"
-        self.P7_1 = nn.ReLU()
-        self.P7_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=2, padding=1)
+    # add P4 elementwise to C3
+    self.P3_1 = nn.Conv2d(C3_size, feature_size, kernel_size=1, stride=1, padding=0)
+    self.P3_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
 
+    # "P6 is obtained via a 3x3 stride-2 conv on C5"
+    self.P6 = nn.Conv2d(C5_size, feature_size, kernel_size=3, stride=2, padding=1)
+
+    # "P7 is computed by applying ReLU followed by a 3x3 stride-2 conv on P6"
+    self.P7_1 = nn.ReLU()
+    self.P7_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=2, padding=1)
+'''
     def forward(self, inputs):
         C3, C4, C5 = inputs
 
@@ -62,7 +65,7 @@ class PyramidFeatures(nn.Module):
         P7_x = self.P7_1(P6_x)
         P7_x = self.P7_2(P7_x)
 
-        return [P3_x, P4_x, P5_x, P6_x, P7_x] # 이런식으로 구현하기
+        return [P3_x, P4_x, P5_x, P6_x, P7_x] # 최종적으로 resize된 feature 반환
 
 
 class RegressionModel(nn.Module):
@@ -153,29 +156,31 @@ class ClassificationModel(nn.Module):
 
 
 class ResNet(nn.Module):
-
+        # layers -> 각각 layer를 몇번 반복사는지 알려줌
     def __init__(self, num_classes, block, layers):
         self.inplanes = 64
         super(ResNet, self).__init__()
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False) #
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.layer1 = self._make_layer(block, 64, layers[0])  # C1 -> output_size 56x56
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2) #C2 -> output_size 28x28
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2) #C3 -> 14x14
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2) #C4 -> 7x7
+
+        # 변경 부분
         if block == BasicBlock:
-            fpn_sizes = [self.layer2[layers[1] - 1].conv2.out_channels, self.layer3[layers[2] - 1].conv2.out_channels,
+            fpn_channel_sizes = [self.layer1[layers[0] - 1].conv2.out_channels , self.layer2[layers[1] - 1].conv2.out_channels, self.layer3[layers[2] - 1].conv2.out_channels,
                          self.layer4[layers[3] - 1].conv2.out_channels]
         elif block == Bottleneck:
-            fpn_sizes = [self.layer2[layers[1] - 1].conv3.out_channels, self.layer3[layers[2] - 1].conv3.out_channels,
+            fpn_channel_sizes = [self.layer1[layers[0] - 1].conv3.out_channels, self.layer2[layers[1] - 1].conv3.out_channels, self.layer3[layers[2] - 1].conv3.out_channels,
                          self.layer4[layers[3] - 1].conv3.out_channels]
         else:
             raise ValueError(f"Block type {block} not understood")
 
-        self.fpn = PyramidFeatures(fpn_sizes[0], fpn_sizes[1], fpn_sizes[2])
+        self.fpn = GraphFPN(fpn_channel_sizes)
 
         self.regressionModel = RegressionModel(256)
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)
@@ -245,7 +250,7 @@ class ResNet(nn.Module):
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
 
-        features = self.fpn([x2, x3, x4])
+        features = self.fpn([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
 
         regression = torch.cat([self.regressionModel(feature) for feature in features], dim=1)
 
