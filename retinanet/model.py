@@ -14,39 +14,70 @@ model_urls = {
     'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
-# code for branch test
-# Feature pyramid 구현
-class GraphFPN(nn.Module):
-    def __init__(self, num_GCN, feature_scale, feature_size=256):
+
+
+
+def add_conv(in_ch, out_ch, kernel, stride, leaky=True):
+    """
+    Add a conv2d / bn / leaky RELU block
+    ----------
+    in_ch
+    out_ch
+    kernel
+    stride
+    leaky
+
+    Returns:
+        stage ( sequential) : Sequential layers composing a conv block
+    -------
+    """
+
+    stage = nn.Sequential()
+    pad = (kernel-1) //2
+    stage.add_module('conv', nn.Conv2d(in_channels=in_ch,
+                                       out_channels=out_ch,kernel_size=kernel, stride=stride,
+                                       padding=pad, bias=False)
+    stage.add_module('batch_norm', nn.BatchNorm2d(out_ch))
+    if leaky:
+        stage.add_module('leaky', nn.LeakyReLU(0.1))
+    else:
+        stage.add_module('leaky', nn.ReLU6(inplace=True))
+    return stage
+
+
+# Node feature create layer 구현
+class Nodefeats(nn.Module):
+    def __init__(self, num_GCN, fpn_channels):
         super(GraphFPN, self).__init__()
+        self.num_GCN = num_GCN
+        self.fpn_cahnnels = fpn_channels # [256, 512, 1024, 2048]
+        self.num_backbone_feats = len(fpn_channels)
+        self.target_size = fpn_channels[(self.num_backbone_feats+2)/2-1]  #error
 
+        self.make_C5_ = self.make_C5(self.fpn_channels[-1],self.target_size) # C4 -> C5
+        self.make_C6 =  nn.Conv2d(self.target_size, self.target_size,kernel_size=3, stride=2, padding=1) # C5 -> C6
 
+        # Target node = C3 -> 256 channel
+        self.resize_C1 = '' # 2 downsample
+        self.resize_C2 = 'a'# 1 downsample
+        self.resize_C3 = ''    # channel resize
+        self.resize_C4 = 'a'# 1 upsample
+        self.resize_C5 = 'a'# 2 upsample
+        self.resize_C6 = 'r'# 3 upsample
 
-'''
-    # upsample C5 to get P5 from the FPN paper
-    self.P5_1 = nn.Conv2d(C5_size, feature_size, kernel_size=1, stride=1, padding=0)
-    self.P5_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-    self.P5_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
+    def make_C5(self,in_ch, out_ch):
+        stage = nn.Sequential()
+        stage.add_module('conv', nn.Conv2d(in_channels=in_ch,
+                                           out_channels=out_ch, kernel_size=1, stride=1, padding=0))# 1x1 channel resize
+        stage.add_module('conv',nn.Conv2d(out_ch,out_ch,kernel=3, stride=2 , padding=1))  # 3x3 conv 2 stride
+        return stage
 
-    # add P5 elementwise to C4
-    self.P4_1 = nn.Conv2d(C4_size, feature_size, kernel_size=1, stride=1, padding=0)
-    self.P4_upsampled = nn.Upsample(scale_factor=2, mode='nearest')
-    self.P4_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
-
-    # add P4 elementwise to C3
-    self.P3_1 = nn.Conv2d(C3_size, feature_size, kernel_size=1, stride=1, padding=0)
-    self.P3_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=1, padding=1)
-
-    # "P6 is obtained via a 3x3 stride-2 conv on C5"
-    self.P6 = nn.Conv2d(C5_size, feature_size, kernel_size=3, stride=2, padding=1)
-
-    # "P7 is computed by applying ReLU followed by a 3x3 stride-2 conv on P6"
-    self.P7_1 = nn.ReLU()
-    self.P7_2 = nn.Conv2d(feature_size, feature_size, kernel_size=3, stride=2, padding=1)
-'''
+    # forward input D
     def forward(self, inputs):
-        C3, C4, C5 = inputs
-
+        C1, C2, C3, C4 = inputs
+                # C1 ~ C6 : original feature
+        C5 = self.down_scale(C4)
+        C6 = self.down_scale(C5)
         P5_x = self.P5_1(C5)
         P5_upsampled_x = self.P5_upsampled(P5_x)
         P5_x = self.P5_2(P5_x)
@@ -65,7 +96,7 @@ class GraphFPN(nn.Module):
         P7_x = self.P7_1(P6_x)
         P7_x = self.P7_2(P7_x)
 
-        return [P3_x, P4_x, P5_x, P6_x, P7_x] # 최종적으로 resize된 feature 반환
+        return [P3_x, P4_x, P5_x, P6_x, P7_x  ] # 최종적으로 resize된 feature 반환
 
 
 class RegressionModel(nn.Module):
@@ -157,8 +188,10 @@ class ClassificationModel(nn.Module):
 
 class ResNet(nn.Module):
         # layers -> 각각 layer를 몇번 반복사는지 알려줌
+        #  ResNet(num_classes, BasicBlock, [2, 2, 2, 2], **kwargs)
     def __init__(self, num_classes, block, layers):
         self.inplanes = 64
+        self.num_graph_blocks = 2
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False) #
         self.bn1 = nn.BatchNorm2d(64)
@@ -180,7 +213,7 @@ class ResNet(nn.Module):
         else:
             raise ValueError(f"Block type {block} not understood")
 
-        self.fpn = GraphFPN(fpn_channel_sizes)
+        self.fpn = self.Node_feature_make(self.num_graph_blocks,fpn_channel_sizes)
 
         self.regressionModel = RegressionModel(256)
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)
@@ -250,11 +283,11 @@ class ResNet(nn.Module):
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
 
-        features = self.fpn([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
+        Node_features = self.Nodefeats([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
+        GCN_FPN_features = self.GCN_FPN(Node_features) # Node_features -> [C1 ~ C6]
+        regression = torch.cat([self.regressionModel(feature) for feature in GCN_FPN_features], dim=1)
 
-        regression = torch.cat([self.regressionModel(feature) for feature in features], dim=1)
-
-        classification = torch.cat([self.classificationModel(feature) for feature in features], dim=1)
+        classification = torch.cat([self.classificationModel(feature) for feature in GCN_FPN_features], dim=1)
 
         anchors = self.anchors(img_batch)
 
