@@ -35,8 +35,8 @@ class Nodefeats(nn.Module):
         self.resize_C2 = self.resize_node_feature(fpn_channels[1], self.target_size,2)
         self.resize_C3 = self.resize_node_feature(fpn_channels[2], self.target_size,3) # channel size = 1024
         self.resize_C4 = nn.Upsample(scale_factor=2, mode='nearest') #-> upsample x2
-        self.resize_C5 =  nn.Upsample(scale_factor=4, mode='nearest') # upsample X4
-        self.resize_C6 =  nn.Upsample(scale_factor=8, mode='nearest') # upsample x8
+        self.resize_C5 = nn.Upsample(scale_factor=4, mode='nearest') # upsample X4
+        self.resize_C6 = nn.Upsample(scale_factor=8, mode='nearest') # upsample x8
 
     def make_C5(self,in_ch, out_ch):
         stage = nn.Sequential()
