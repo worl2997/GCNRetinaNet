@@ -45,25 +45,25 @@ def add_conv(in_ch, out_ch, kernel, stride, leaky=True):
     return stage
 
 
-# Node feature create layer 구현
+# Node feature create la
 class Nodefeats(nn.Module):
     def __init__(self, num_GCN, fpn_channels):
-        super(GraphFPN, self).__init__()
+        super(Nodefeats, self).__init__()
         self.num_GCN = num_GCN
         self.fpn_cahnnels = fpn_channels # [256, 512, 1024, 2048]
         self.num_backbone_feats = len(fpn_channels)
         self.target_size = fpn_channels[(self.num_backbone_feats+2)/2-1]  #error
 
         self.make_C5_ = self.make_C5(self.fpn_channels[-1],self.target_size) # C4 -> C5
-        self.make_C6 =  nn.Conv2d(self.target_size, self.target_size,kernel_size=3, stride=2, padding=1) # C5 -> C6
+        self.make_C6_ =  nn.Conv2d(self.target_size, self.target_size,kernel_size=3, stride=2, padding=1) # C5 -> C6
 
-        # Target node = C3 -> 256 channel
-        self.resize_C1 = '' # 2 downsample
-        self.resize_C2 = 'a'# 1 downsample
-        self.resize_C3 = ''    # channel resize
-        self.resize_C4 = 'a'# 1 upsample
-        self.resize_C5 = 'a'# 2 upsample
-        self.resize_C6 = 'r'# 3 upsample
+        # Target node = C3 -> 256 channel로 통일하자
+        self.resize_C1 = # 2 1x1 conv (channel resize) -> downsample
+        self.resize_C2 = 'a'# 1 1x1 conv (channel resize) -> 3x3 2stride conv -> max_pooing  (downsample)
+        self.resize_C3 = ''    # channel resize -> 1x1 conv
+        self.resize_C4 = 'a'# 1 1x1 conv -> upsample x2
+        self.resize_C5 = 'a'# 2 1x1 conv -> upsample X4
+        self.resize_C6 = 'r'# 3 1x1 conv -> upsample x8
 
     def make_C5(self,in_ch, out_ch):
         stage = nn.Sequential()
@@ -72,12 +72,17 @@ class Nodefeats(nn.Module):
         stage.add_module('conv',nn.Conv2d(out_ch,out_ch,kernel=3, stride=2 , padding=1))  # 3x3 conv 2 stride
         return stage
 
+    def resize_node_feature(self, in_feat, target_feat,src_level, target_level):
+        in_feat =
+
     # forward input D
     def forward(self, inputs):
         C1, C2, C3, C4 = inputs
                 # C1 ~ C6 : original feature
-        C5 = self.down_scale(C4)
-        C6 = self.down_scale(C5)
+        C5 = self.make_C5_(C4)
+        C6 = self.make_C6_(C5)
+
+
         P5_x = self.P5_1(C5)
         P5_upsampled_x = self.P5_upsampled(P5_x)
         P5_x = self.P5_2(P5_x)
