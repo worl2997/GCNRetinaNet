@@ -6,6 +6,7 @@ from torchvision.ops import nms
 from retinanet.utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
 from retinanet.anchors import Anchors
 from retinanet import losses
+import torch.nn.functional as F
 
 model_urls = {
     'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
@@ -15,55 +16,27 @@ model_urls = {
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
 
-
-
-def add_conv(in_ch, out_ch, kernel, stride, leaky=True):
-    """
-    Add a conv2d / bn / leaky RELU block
-    ----------
-    in_ch
-    out_ch
-    kernel
-    stride
-    leaky
-
-    Returns:
-        stage ( sequential) : Sequential layers composing a conv block
-    -------
-    """
-
-    stage = nn.Sequential()
-    pad = (kernel-1) //2
-    stage.add_module('conv', nn.Conv2d(in_channels=in_ch,
-                                       out_channels=out_ch,kernel_size=kernel, stride=stride,
-                                       padding=pad, bias=False)
-    stage.add_module('batch_norm', nn.BatchNorm2d(out_ch))
-    if leaky:
-        stage.add_module('leaky', nn.LeakyReLU(0.1))
-    else:
-        stage.add_module('leaky', nn.ReLU6(inplace=True))
-    return stage
-
-
 # Node feature create la
 class Nodefeats(nn.Module):
     def __init__(self, num_GCN, fpn_channels):
         super(Nodefeats, self).__init__()
         self.num_GCN = num_GCN
-        self.fpn_cahnnels = fpn_channels # [256, 512, 1024, 2048]
+        self.fpn_cahnnels = fpn_channels # [256, 512, 1024, 2048] # 레벨별 채널 수
         self.num_backbone_feats = len(fpn_channels)
-        self.target_size = fpn_channels[(self.num_backbone_feats+2)/2-1]  #error
+        self.target_size = fpn_channels[(self.num_backbone_feats+2)/2-1]  # 채널수가 너무많음.. 1024
 
         self.make_C5_ = self.make_C5(self.fpn_channels[-1],self.target_size) # C4 -> C5
         self.make_C6_ =  nn.Conv2d(self.target_size, self.target_size,kernel_size=3, stride=2, padding=1) # C5 -> C6
 
         # Target node = C3 -> 256 channel로 통일하자
-        self.resize_C1 = # 2 1x1 conv (channel resize) -> downsample
-        self.resize_C2 = 'a'# 1 1x1 conv (channel resize) -> 3x3 2stride conv -> max_pooing  (downsample)
-        self.resize_C3 = ''    # channel resize -> 1x1 conv
-        self.resize_C4 = 'a'# 1 1x1 conv -> upsample x2
-        self.resize_C5 = 'a'# 2 1x1 conv -> upsample X4
-        self.resize_C6 = 'r'# 3 1x1 conv -> upsample x8
+        #  1x1 conv (channel resize) -> 2-stride max_pooing -> 3x3 2 stride conv (down sample)
+        self.resize_C1 =  self.resize_node_feature(fpn_channels[0],self.target_size,1)
+        # 1 1x1 conv (channel resize) -> 3x3 2stride conv
+        self.resize_C2 = self.resize_node_feature(fpn_channels[1], self.target_size,2)
+        self.resize_C3 = self.resize_node_feature(fpn_channels[2], self.target_size,3) # channel size = 1024
+        self.resize_C4 = nn.Upsample(scale_factor=2, mode='nearest') #-> upsample x2
+        self.resize_C5 =  nn.Upsample(scale_factor=4, mode='nearest') # upsample X4
+        self.resize_C6 =  nn.Upsample(scale_factor=8, mode='nearest') # upsample x8
 
     def make_C5(self,in_ch, out_ch):
         stage = nn.Sequential()
@@ -72,36 +45,54 @@ class Nodefeats(nn.Module):
         stage.add_module('conv',nn.Conv2d(out_ch,out_ch,kernel=3, stride=2 , padding=1))  # 3x3 conv 2 stride
         return stage
 
-    def resize_node_feature(self, in_feat, target_feat,src_level, target_level):
-        in_feat =
+    # 맞춰야할 기준 노드가 level3 노드라고 가정하고 짜는 코드
+    def resize_node_feature(self, in_feat, target_feat,src_level):
+        # 일단 단순하게 짜자, 성능이 확인되면 general한 구조 생각하기
+        if src_level == 1:
+            stage = nn.Sequential()
+            stage.add_module('conv', nn.Conv2d(in_channels=in_feat,
+                                               out_channels=target_feat,
+                                               kernel_size=1,
+                                               stride=1,
+                                               padding=0))
+            stage.add_module('max_pooling', nn.MaxPool2d(kernel_size=3, stride=2, padding=1))
+            stage.add_module('conv_2s',nn.Conv2d(in_channels=target_feat,
+                                               out_channels=target_feat,
+                                               kernel_size=3,
+                                               stride=2,
+                                               padding=1))
+            return stage
+        elif src_level == 2:
+            stage = nn.Sequential()
+            stage.add_module('conv', nn.Conv2d(in_channels=in_feat,
+                                               out_channels=target_feat,
+                                               kernel_size=1,
+                                               stride=1,
+                                               padding=0))
+            stage.add_module('conv_2s', nn.Conv2d(in_channels=target_feat,
+                                                  out_channels=target_feat,
+                                                  kernel_size=3,
+                                                  stride=2,
+                                                  padding=1))
+            return stage
+        elif src_level == 3: # baseline node
+            stage = nn.Conv2d(in_feat, target_feat,kernel_size=1,stride=1,padding=0)
+            return stage
 
-    # forward input D
+                # forward input D
     def forward(self, inputs):
         C1, C2, C3, C4 = inputs
                 # C1 ~ C6 : original feature
         C5 = self.make_C5_(C4)
         C6 = self.make_C6_(C5)
 
-
-        P5_x = self.P5_1(C5)
-        P5_upsampled_x = self.P5_upsampled(P5_x)
-        P5_x = self.P5_2(P5_x)
-
-        P4_x = self.P4_1(C4)
-        P4_x = P5_upsampled_x + P4_x
-        P4_upsampled_x = self.P4_upsampled(P4_x)
-        P4_x = self.P4_2(P4_x)
-
-        P3_x = self.P3_1(C3)
-        P3_x = P3_x + P4_upsampled_x
-        P3_x = self.P3_2(P3_x)
-
-        P6_x = self.P6(C5)
-
-        P7_x = self.P7_1(P6_x)
-        P7_x = self.P7_2(P7_x)
-
-        return [P3_x, P4_x, P5_x, P6_x, P7_x  ] # 최종적으로 resize된 feature 반환
+        re_c1 = self.resize_C1(C1)
+        re_c2 = self.resize_C2(C2)
+        re_c3 = self.resize_C3(C3)
+        re_c4 = self.resize_C4(C4)
+        re_c5 = self.resize_C5(C5)
+        re_c6 = self.resize_C6(C6)
+        return [re_c1,re_c2,re_c3,re_c4,re_c5,re_c6] # 최종적으로 resize된 feature 반환
 
 
 class RegressionModel(nn.Module):
