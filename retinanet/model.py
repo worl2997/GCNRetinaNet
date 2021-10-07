@@ -3,9 +3,10 @@ import torch
 import math
 import torch.utils.model_zoo as model_zoo
 from torchvision.ops import nms
-from retinanet.utils import BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
+from retinanet.utils import conv1_block,BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
 from retinanet.anchors import Anchors
 from retinanet import losses
+from
 import torch.nn.functional as F
 
 model_urls = {
@@ -15,6 +16,7 @@ model_urls = {
     'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
+
 
 # Node feature create la
 class Nodefeats_make(nn.Module):
@@ -103,10 +105,15 @@ class GCN_FPN(nn.Module):
         self.in_feats = in_feat_size
         self.out_feats = out_feats_size
 
+    def make_distance(self, x1,x2, in_feat, out_feat):
+        x_add = x1 + x2 # elementwise add
+        c_cat = torch.cat([x2, x_add], dim=1)
+        convolution = conv1_block(4,2) # in_feat, out_feat
+        target = convolution(c_cat)
+        distance = ((x2-target).abs()).sum()
+        return distance
 
-
-    def make_edge
-
+    def make_edge_matirx (self, ):
 
 class RegressionModel(nn.Module): #들어오는 feature 수를 교정해 주어야함
     def __init__(self, num_features_in, num_anchors=9, feature_size=256):

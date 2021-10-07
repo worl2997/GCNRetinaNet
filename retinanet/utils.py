@@ -10,6 +10,15 @@ def conv3x3(in_planes, out_planes, stride=1):
 
 
 
+class conv1_block(nn.Module):
+    def __init__(self, in_feat, out_feat):
+        super(conv_1,self).__init__()
+        self.in_feat = in_feat
+        self.out_feat = out_feat
+        self.conv1 =  nn.Conv2d(self.in_feat, self.out_feat, kernel_size=1, stride=1, padding=0)
+    def forward(self,x):
+        return self.conv1(x)
+
 class BasicBlock(nn.Module):
     expansion = 1
 
