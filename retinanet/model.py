@@ -17,13 +17,13 @@ model_urls = {
 }
 
 # Node feature create la
-class Nodefeats(nn.Module):
+class Nodefeats_make(nn.Module):
     def __init__(self, num_GCN, fpn_channels):
-        super(Nodefeats, self).__init__()
+        super(Nodefeats_make, self).__init__()
         self.num_GCN = num_GCN
         self.fpn_cahnnels = fpn_channels # [256, 512, 1024, 2048] # 레벨별 채널 수
         self.num_backbone_feats = len(fpn_channels)
-        self.target_size = fpn_channels[(self.num_backbone_feats+2)/2-1]  # 채널수가 너무많음.. 1024
+        self.target_size =  256 # fpn_channels[(self.num_backbone_feats+2)/2-1]  # 채널수가 너무많음.. 1024
 
         self.make_C5_ = self.make_C5(self.fpn_channels[-1],self.target_size) # C4 -> C5
         self.make_C6_ =  nn.Conv2d(self.target_size, self.target_size,kernel_size=3, stride=2, padding=1) # C5 -> C6
@@ -79,23 +79,36 @@ class Nodefeats(nn.Module):
             stage = nn.Conv2d(in_feat, target_feat,kernel_size=1,stride=1,padding=0)
             return stage
 
-                # forward input D
     def forward(self, inputs):
         C1, C2, C3, C4 = inputs
                 # C1 ~ C6 : original feature
         C5 = self.make_C5_(C4)
         C6 = self.make_C6_(C5)
 
+        origin_feats = [C1,C2,C3,C4,C5,C6]
         re_c1 = self.resize_C1(C1)
         re_c2 = self.resize_C2(C2)
         re_c3 = self.resize_C3(C3)
         re_c4 = self.resize_C4(C4)
         re_c5 = self.resize_C5(C5)
         re_c6 = self.resize_C6(C6)
-        return [re_c1,re_c2,re_c3,re_c4,re_c5,re_c6] # 최종적으로 resize된 feature 반환
+        return [re_c1,re_c2,re_c3,re_c4,re_c5,re_c6], origin_feats # 최종적으로 resize된 feature 반환
+
+class GCN_FPN(nn.Module):
+    def __init__(self, node_feats, origin_feats, in_feat_size, out_feats_size):
+        super(GCN_FPN, self).__init__()
+
+        self.node_feats = node_feats
+        self.origin_feats = origin_feats
+        self.in_feats = in_feat_size
+        self.out_feats = out_feats_size
 
 
-class RegressionModel(nn.Module):
+
+    def make_edge
+
+
+class RegressionModel(nn.Module): #들어오는 feature 수를 교정해 주어야함
     def __init__(self, num_features_in, num_anchors=9, feature_size=256):
         super(RegressionModel, self).__init__()
 
@@ -209,9 +222,9 @@ class ResNet(nn.Module):
         else:
             raise ValueError(f"Block type {block} not understood")
 
-        self.fpn = self.Node_feature_make(self.num_graph_blocks,fpn_channel_sizes)
+        self.fpn = self.Nodefeats_make(self, fpn_channel_sizes)
 
-        self.regressionModel = RegressionModel(256)
+        self.regressionModel = RegressionModel(256) # 256 차원이라..
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)
 
         self.anchors = Anchors()
@@ -279,8 +292,8 @@ class ResNet(nn.Module):
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
 
-        Node_features = self.Nodefeats([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
-        GCN_FPN_features = self.GCN_FPN(Node_features) # Node_features -> [C1 ~ C6]
+        Node_features, origin_features = self.Nodefeats_make([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
+        GCN_FPN_features = self.GCN_FPN(Node_features,origin_features, 256, 256) # Node_features -> [C1 ~ C6], 일단은 in channel을 256, out_channel을 256이라 가정하고 진행하자
         regression = torch.cat([self.regressionModel(feature) for feature in GCN_FPN_features], dim=1)
 
         classification = torch.cat([self.classificationModel(feature) for feature in GCN_FPN_features], dim=1)
