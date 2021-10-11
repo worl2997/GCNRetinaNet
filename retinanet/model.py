@@ -20,6 +20,8 @@ model_urls = {
     'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
 }
 
+# 256 채널에
+# feature 사이즈 -> [112x112, 56 x 56 ,14 x 14, 7x7]
 
 # Node feature create la
 class Nodefeats_make(nn.Module):
@@ -38,7 +40,7 @@ class Nodefeats_make(nn.Module):
         self.resize_C1 =  self.resize_node_feature(fpn_channels[0],self.target_size,1)
         # 1 1x1 conv (channel resize) -> 3x3 2stride conv
         self.resize_C2 = self.resize_node_feature(fpn_channels[1], self.target_size,2)
-        self.resize_C3 = self.resize_node_feature(fpn_channels[2], self.target_size,3) # channel size = 1024
+        self.resize_C3 = self.resize_node_feature(fpn_channels[2], self.target_size,3) # channel size = 1024 -> channel_size = 256
         self.resize_C4 = nn.Upsample(scale_factor=2, mode='nearest') #-> upsample x2
         self.resize_C5 = nn.Upsample(scale_factor=4, mode='nearest') # upsample X4
         self.resize_C6 = nn.Upsample(scale_factor=8, mode='nearest') # upsample x8
@@ -102,8 +104,10 @@ class Nodefeats_make(nn.Module):
 # origin feature와 updated feature를 기반으로 prediction head로 넘길 피쳐를 생성하는 부분
 # 이 부분을 GCN 기반이 아니라 GAT 기반으로 바꾸어 보는것은 어떨까
 class GCN_FPN(nn.Module):
-    def __init__(self, node_feats, in_feat_size, out_feats_size):
+    def __init__(self, g, node_feats, in_feat_size, out_feats_size, n_layer ,activation, dropout):
         super(GCN_FPN, self).__init__()
+        self.g = g
+
         self.in_feats = in_feat_size
         self.out_feats = out_feats_size
 
@@ -111,6 +115,7 @@ class GCN_FPN(nn.Module):
         self.node_feats = node_feats # origin feature
         self.edge_feats = self.make_edge_matirx(node_feats,self.in_feats)
         self.g = self.make_dgl_graph(self.node_feats, self.edge_feats)
+
 
 
     # edge 계산 메소드
@@ -138,25 +143,27 @@ class GCN_FPN(nn.Module):
                     edge_list.append(1) # 수정 가능성 존재
                 else:
                     edge_list.append(self.make_distance(node_i,node_j,in_feats))
-
-        # edge_list를 단순히 리스트로 구성하는 것이 맞나?
-        return edge_list
+        return torch.tensor(edge_list)
 
 
     def make_dgl_graph(self,node_feats,edge_feats):
         # 여기에 그래프 구성 코드를 집어넣으면 됨
+        ns = node_feats[0].size()
         len_node = len(node_feats)
-        source_node = []
+        src_node = []
         dst_node = []
         for i in range(len_node):
-            source_node += ([i] * len_node)
+            src_node += ([i] * len_node)
             for j in range(len_node):
                 dst_node.append(j)
-        # 각 edge는 0부터 순차적인 인덱스 번호로 ID가 할당 됨
-        # node가 6개라면 0~ 35까지 있는셈
-        g = dgl.graph((source_node, dst_node), num_nodes=len_node)
-        g.ndata['h'] = '미정 '
-        g.edata['e'] = '미정 '
+        g = dgl.graph(data=(src_node, dst_node), num_nodes=len_node, device='cpu')
+        node_feats_matrix = torch.Tensor(len_node, ns[0], ns[1], ns[2], ns[3])
+        for i, node in enumerate(node_feats):
+            node_feats_matrix[i] = node
+        g.ndata['h'] = node_feats_matrix.view(len_node, -1)  # 6 x (NxCxHxW) , node feature
+        g.edata['e'] = edge_feats  # 6 x 6 ..? , edge feature
+
+        return g
 
     def forward(self, origin_feat, gcn_feat):
         # GCN을 구현해서 input으로 넣어주어야함
@@ -278,7 +285,7 @@ class ResNet(nn.Module):
         else:
             raise ValueError(f"Block type {block} not understood")
 
-        self.fpn = self.Nodefeats_make(self, fpn_channel_sizes)
+        self.fpn = Nodefeats_make(fpn_channel_sizes)
 
         self.regressionModel = RegressionModel(256) # 256 차원이라..
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)

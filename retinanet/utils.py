@@ -1,35 +1,43 @@
 import torch
 import torch.nn as nn
 import numpy as np
-
+import dgl
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
-def make_dgl_grpah(node_feats, edge_feats):
-  # node_feats -> resize 된 피쳐맵들이 정의 된 리스트
-  # edge_feats -> make_edge_matrix로 부터 생성된 edge feature
-  print(edge_feats.shape)
 
-  ns = node_feats[0].size()
-  len_node = len(node_feats)
-  src_node = []
-  dst_node = []
-  # 일단 노드가 어떤 연결구성을 띄고 있는지 정의
-  for i in range(len_node):
-    src_node += ([i]*len_node)
-    for j in range(len_node):
-      dst_node.append(j)
-  g = dgl.graph(data=(src_node, dst_node), num_nodes= len_node, device='cpu')
-  node_feats_matrix  = torch.Tensor(len_node, ns[0],ns[1],ns[2],ns[3])
-  for i,node in enumerate(node_feats):
-    node_feats_matrix[i] = node
-  g.ndata['h'] = node_feats_matrix.view(len_node,-1) # 6 x (NxCxHxW) , node feature
-  g.edata['e'] = edge_feats # 6 x 6 ..? , edge feature
+# edge 계산 메소드
+def make_distance(self, x1, x2, in_feats):
+    x_add = x1 + x2  # elementwise add
+    c_cat = torch.cat([x2, x_add], dim=1)  # 이거는 C x H x W 차원일 기준으로 하것
+    convolution = conv1_block(2 * in_feats, in_feats)
+    target = convolution(c_cat)
+    distance = ((x2 - target).abs()).sum()
+    # distance가 이게 맞나?
+    # 현재 이 distance가 과연 스칼라 값일까
+    return distance
 
-  return g
+
+# 이부분도 개선의 여지가 있음
+# 다만 일단 가장 베이스 부분만 구현을 진행하고 추후 추가 구현을 진행하자
+def make_edge_matirx(self, node_feats, in_feats):
+    # 입력 받은 feature node  리스트를 기반으로 make_distance로 edge를 계산하고
+    # pruning 기능 추가
+    # edata에 넣어줄 형식으로 변환해야함, size -> (36, 1)
+    Node_feats = node_feats
+    edge_list = []
+    for i, node_i in enumerate(Node_feats):
+        for j, node_j in enumerate(Node_feats):
+            if i == j:
+                edge_list.append(1)  # 수정 가능성 존재
+            else:
+                edge_list.append(self.make_distance(node_i, node_j, in_feats))
+
+    # edge_list를 단순히 리스트로 구성하는 것이 맞나?
+    return edge_list
 
 class conv1_block(nn.Module):
     def __init__(self, in_feat, out_feat):
