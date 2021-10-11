@@ -8,11 +8,32 @@ def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
                      padding=1, bias=False)
 
+def make_dgl_grpah(node_feats, edge_feats):
+  # node_feats -> resize 된 피쳐맵들이 정의 된 리스트
+  # edge_feats -> make_edge_matrix로 부터 생성된 edge feature
+  print(edge_feats.shape)
 
+  ns = node_feats[0].size()
+  len_node = len(node_feats)
+  src_node = []
+  dst_node = []
+  # 일단 노드가 어떤 연결구성을 띄고 있는지 정의
+  for i in range(len_node):
+    src_node += ([i]*len_node)
+    for j in range(len_node):
+      dst_node.append(j)
+  g = dgl.graph(data=(src_node, dst_node), num_nodes= len_node, device='cpu')
+  node_feats_matrix  = torch.Tensor(len_node, ns[0],ns[1],ns[2],ns[3])
+  for i,node in enumerate(node_feats):
+    node_feats_matrix[i] = node
+  g.ndata['h'] = node_feats_matrix.view(len_node,-1) # 6 x (NxCxHxW) , node feature
+  g.edata['e'] = edge_feats # 6 x 6 ..? , edge feature
+
+  return g
 
 class conv1_block(nn.Module):
     def __init__(self, in_feat, out_feat):
-        super(conv_1,self).__init__()
+        super(conv1_block,self).__init__()
         self.in_feat = in_feat
         self.out_feat = out_feat
         self.conv1 =  nn.Conv2d(self.in_feat, self.out_feat, kernel_size=1, stride=1, padding=0)
