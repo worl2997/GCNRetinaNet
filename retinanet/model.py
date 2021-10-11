@@ -6,8 +6,11 @@ from torchvision.ops import nms
 from retinanet.utils import conv1_block,BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
 from retinanet.anchors import Anchors
 from retinanet import losses
-from
 import torch.nn.functional as F
+import dgl
+import torch.nn as nn
+import networkx as nx
+import numpy
 
 model_urls = {
     'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
@@ -96,24 +99,70 @@ class Nodefeats_make(nn.Module):
         re_c6 = self.resize_C6(C6)
         return [re_c1,re_c2,re_c3,re_c4,re_c5,re_c6], origin_feats # 최종적으로 resize된 feature 반환
 
+# origin feature와 updated feature를 기반으로 prediction head로 넘길 피쳐를 생성하는 부분
+# 이 부분을 GCN 기반이 아니라 GAT 기반으로 바꾸어 보는것은 어떨까
 class GCN_FPN(nn.Module):
-    def __init__(self, node_feats, origin_feats, in_feat_size, out_feats_size):
+    def __init__(self, node_feats, in_feat_size, out_feats_size):
         super(GCN_FPN, self).__init__()
-
-        self.node_feats = node_feats
-        self.origin_feats = origin_feats
         self.in_feats = in_feat_size
         self.out_feats = out_feats_size
 
-    def make_distance(self, x1,x2, in_feat, out_feat):
+        # 노드랑 edge feats
+        self.node_feats = node_feats # origin feature
+        self.edge_feats = self.make_edge_matirx(node_feats,self.in_feats)
+        self.g = self.make_dgl_graph(self.node_feats, self.edge_feats)
+
+
+    # edge 계산 메소드
+    def make_distance(self, x1,x2, in_feats):
         x_add = x1 + x2 # elementwise add
-        c_cat = torch.cat([x2, x_add], dim=1)
-        convolution = conv1_block(4,2) # in_feat, out_feat
+        c_cat = torch.cat([x2, x_add], dim=1) # 이거는 C x H x W 차원일 기준으로 하것
+        convolution = conv1_block(2*in_feats, in_feats)
         target = convolution(c_cat)
         distance = ((x2-target).abs()).sum()
+        # distance가 이게 맞나?
+        # 현재 이 distance가 과연 스칼라 값일까
         return distance
 
-    def make_edge_matirx (self, ):
+    # 이부분도 개선의 여지가 있음
+    # 다만 일단 가장 베이스 부분만 구현을 진행하고 추후 추가 구현을 진행하자
+    def make_edge_matirx(self, node_feats, in_feats):
+        # 입력 받은 feature node  리스트를 기반으로 make_distance로 edge를 계산하고
+        # pruning 기능 추가
+        # edata에 넣어줄 형식으로 변환해야함, size -> (36, 1)
+        Node_feats = node_feats
+        edge_list = []
+        for i, node_i in enumerate(Node_feats):
+            for j, node_j in enumerate(Node_feats):
+                if i==j:
+                    edge_list.append(1) # 수정 가능성 존재
+                else:
+                    edge_list.append(self.make_distance(node_i,node_j,in_feats))
+
+        # edge_list를 단순히 리스트로 구성하는 것이 맞나?
+        return edge_list
+
+
+    def make_dgl_graph(self,node_feats,edge_feats):
+        # 여기에 그래프 구성 코드를 집어넣으면 됨
+        len_node = len(node_feats)
+        source_node = []
+        dst_node = []
+        for i in range(len_node):
+            source_node += ([i] * len_node)
+            for j in range(len_node):
+                dst_node.append(j)
+        # 각 edge는 0부터 순차적인 인덱스 번호로 ID가 할당 됨
+        # node가 6개라면 0~ 35까지 있는셈
+        g = dgl.graph((source_node, dst_node), num_nodes=len_node)
+        g.ndata['h'] = '미정 '
+        g.edata['e'] = '미정 '
+
+    def forward(self, origin_feat, gcn_feat):
+        # GCN을 구현해서 input으로 넣어주어야함
+        pass
+
+
 
 class RegressionModel(nn.Module): #들어오는 feature 수를 교정해 주어야함
     def __init__(self, num_features_in, num_anchors=9, feature_size=256):
