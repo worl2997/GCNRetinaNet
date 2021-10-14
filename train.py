@@ -65,8 +65,8 @@ def main(args=None):
 
     else:
         raise ValueError('Dataset type not understood (must be csv or coco), exiting.')
-
-    sampler = AspectRatioBasedSampler(dataset_train, batch_size=2, drop_last=False)
+    # 배치 사이즈 조절
+    sampler = AspectRatioBasedSampler(dataset_train, batch_size=3, drop_last=False)
     dataloader_train = DataLoader(dataset_train, num_workers=3, collate_fn=collater, batch_sampler=sampler)
 
     if dataset_val is not None:
@@ -75,7 +75,7 @@ def main(args=None):
 
     # Create the model
     if parser.depth == 18:
-        retinanet = model.resnet18(num_classes=dataset_train.num_classes(), pretrained=True)
+        retinanet = model.resnet18(num_classes=dataset_train.num_classes(), pretrained=True) # model.cuda
     elif parser.depth == 34:
         retinanet = model.resnet34(num_classes=dataset_train.num_classes(), pretrained=True)
     elif parser.depth == 50:
@@ -88,13 +88,13 @@ def main(args=None):
         raise ValueError('Unsupported model depth, must be one of 18, 34, 50, 101, 152')
 
     use_gpu = True
-
+    # CUDA 사용할 때
     if use_gpu:
         if torch.cuda.is_available():
             retinanet = retinanet.cuda()
 
     if torch.cuda.is_available():
-        retinanet = torch.nn.DataParallel(retinanet).cuda()
+        retinanet = torch.nn.DataParallel(retinanet).cuda() # 데이터 병렬
     else:
         retinanet = torch.nn.DataParallel(retinanet)
 

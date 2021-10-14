@@ -3,7 +3,7 @@ import torch
 import math
 import torch.utils.model_zoo as model_zoo
 from torchvision.ops import nms
-from retinanet.utils import conv1_block,BasicBlock, Bottleneck, BBoxTransform, ClipBoxes
+from retinanet.utils import conv1x1,BasicBlock, Bottleneck, BBoxTransform, ClipBoxes, GFPN_conv, FUB
 from retinanet.anchors import Anchors
 from retinanet import losses
 import torch.nn.functional as F
@@ -23,11 +23,29 @@ model_urls = {
 # 256 채널에
 # feature 사이즈 -> [112x112, 56 x 56 ,14 x 14, 7x7]
 
-# Node feature create la
+# 백본으로 부터 추출된 feature map을 기반으로 그래프의 입력으로 들어갈
+# node_feature h 와 edge feature를 생성해 주는 부분
+class GCN_FPN(nn.Module):
+    def __init__(self, channel_size, activation, dropout, num_node):
+        super(GCN_FPN, self).__init__()
+        # channel_size => 통합된 feature map의 채널 사이즈를 넘겨주면 될듯
+        self.FUB_layer = FUB(channel_size, activation, dropout, num_node)  # forward input -> resize node list
+        self.GFPN_conv = GFPN_conv(channel_size)  # forward input -> updated feature, origin_feature
+
+        # 일단 layer 수를 몇개 입력받아서 반복할지에 대해서는 추후에 구조를 다시 짜기
+
+    def forward(self, features):
+        origin = features
+        updated_1 = self.FUB_layer(features)
+        updated_feat1 = self.GFPN_conv(origin, updated_1)
+        updated_2 = self.FUB_layer(updated_feat1)
+        updated_feat2 = self.GFPN_conv(origin, updated_2)
+        return updated_feat2 # [c0,c1,c2,c3,c4,c5]
+
+
 class Nodefeats_make(nn.Module):
-    def __init__(self, num_GCN, fpn_channels):
+    def __init__(self, fpn_channels):
         super(Nodefeats_make, self).__init__()
-        self.num_GCN = num_GCN
         self.fpn_cahnnels = fpn_channels # [256, 512, 1024, 2048] # 레벨별 채널 수
         self.num_backbone_feats = len(fpn_channels)
         self.target_size =  256 # fpn_channels[(self.num_backbone_feats+2)/2-1]  # 채널수가 너무많음.. 1024
@@ -44,6 +62,7 @@ class Nodefeats_make(nn.Module):
         self.resize_C4 = nn.Upsample(scale_factor=2, mode='nearest') #-> upsample x2
         self.resize_C5 = nn.Upsample(scale_factor=4, mode='nearest') # upsample X4
         self.resize_C6 = nn.Upsample(scale_factor=8, mode='nearest') # upsample x8
+
 
     def make_C5(self,in_ch, out_ch):
         stage = nn.Sequential()
@@ -99,75 +118,25 @@ class Nodefeats_make(nn.Module):
         re_c4 = self.resize_C4(C4)
         re_c5 = self.resize_C5(C5)
         re_c6 = self.resize_C6(C6)
-        return [re_c1,re_c2,re_c3,re_c4,re_c5,re_c6], origin_feats # 최종적으로 resize된 feature 반환
+        return [re_c1,re_c2,re_c3,re_c4,re_c5,re_c6] # 최종적으로 resize된 feature 반환
 
 # origin feature와 updated feature를 기반으로 prediction head로 넘길 피쳐를 생성하는 부분
-# 이 부분을 GCN 기반이 아니라 GAT 기반으로 바꾸어 보는것은 어떨까
 class GCN_FPN(nn.Module):
-    def __init__(self, g, node_feats, in_feat_size, out_feats_size, n_layer ,activation, dropout):
+    def __init__(self, channel_size, activation, dropout, fmap_size, num_node):
         super(GCN_FPN, self).__init__()
-        self.g = g
+        # channel_size => 통합된 feature map의 채널 사이즈를 넘겨주면 될듯
+        self.FUB_layer = FUB(channel_size, activation, dropout, fmap_size, num_node)  # forward input -> resize node list
+        self.GFPN_conv = GFPN_conv(channel_size)  # forward input -> updated feature, origin_feature
 
-        self.in_feats = in_feat_size
-        self.out_feats = out_feats_size
+        # 일단 layer 수를 몇개 입력받아서 반복할지에 대해서는 추후에 구조를 다시 짜기
 
-        # 노드랑 edge feats
-        self.node_feats = node_feats # origin feature
-        self.edge_feats = self.make_edge_matirx(node_feats,self.in_feats)
-        self.g = self.make_dgl_graph(self.node_feats, self.edge_feats)
-
-
-
-    # edge 계산 메소드
-    def make_distance(self, x1,x2, in_feats):
-        x_add = x1 + x2 # elementwise add
-        c_cat = torch.cat([x2, x_add], dim=1) # 이거는 C x H x W 차원일 기준으로 하것
-        convolution = conv1_block(2*in_feats, in_feats)
-        target = convolution(c_cat)
-        distance = ((x2-target).abs()).sum()
-        # distance가 이게 맞나?
-        # 현재 이 distance가 과연 스칼라 값일까
-        return distance
-
-    # 이부분도 개선의 여지가 있음
-    # 다만 일단 가장 베이스 부분만 구현을 진행하고 추후 추가 구현을 진행하자
-    def make_edge_matirx(self, node_feats, in_feats):
-        # 입력 받은 feature node  리스트를 기반으로 make_distance로 edge를 계산하고
-        # pruning 기능 추가
-        # edata에 넣어줄 형식으로 변환해야함, size -> (36, 1)
-        Node_feats = node_feats
-        edge_list = []
-        for i, node_i in enumerate(Node_feats):
-            for j, node_j in enumerate(Node_feats):
-                if i==j:
-                    edge_list.append(1) # 수정 가능성 존재
-                else:
-                    edge_list.append(self.make_distance(node_i,node_j,in_feats))
-        return torch.tensor(edge_list)
-
-
-    def make_dgl_graph(self,node_feats,edge_feats):
-        # 여기에 그래프 구성 코드를 집어넣으면 됨
-        ns = node_feats[0].size()
-        len_node = len(node_feats)
-        src_node = []
-        dst_node = []
-        for i in range(len_node):
-            src_node += ([i] * len_node)
-            for j in range(len_node):
-                dst_node.append(j)
-        g = dgl.graph(data=(src_node, dst_node), num_nodes=len_node, device='cpu')
-        node_feats_matrix = torch.Tensor(len_node, ns[0], ns[1], ns[2], ns[3])
-        for i, node in enumerate(node_feats):
-            node_feats_matrix[i] = node
-        g.ndata['h'] = node_feats_matrix.view(len_node, -1)  # 6 x (NxCxHxW) , node feature
-        g.edata['e'] = edge_feats  # 6 x 6 ..? , edge feature
-
-        return g
-
-    def forward(self, origin_feat, gcn_feat):
-        # GCN을 구현해서 input으로 넣어주어야함
-        pass
+    def forward(self, features):
+        origin = features
+        updated_1 = self.FUB_layer(features)
+        updated_feat1 = self.GFPN_conv(origin, updated_1)
+        updated_2 = self.FUB_layer(updated_feat1)
+        updated_feat2 = self.GFPN_conv(origin, updated_2)
+        return updated_feat2 # [c0,c1,c2,c3,c4,c5]
 
 
 
@@ -262,20 +231,22 @@ class ResNet(nn.Module):
         # layers -> 각각 layer를 몇번 반복사는지 알려줌
         #  ResNet(num_classes, BasicBlock, [2, 2, 2, 2], **kwargs)
     def __init__(self, num_classes, block, layers):
+        self.node_num = 6
+        self.node_channel_size = 256 # 일단 임의로 이렇게 지정
+
         self.inplanes = 64
-        self.num_graph_blocks = 2
         super(ResNet, self).__init__()
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False) #
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
 
+
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-        self.layer1 = self._make_layer(block, 64, layers[0])  # C1 -> output_size 56x56
+        self.layer1 = self._make_layer(block, 64, layers[0])  # C1 -> output_size 56x56 (이미지 사이즈에 따라서 다름)
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2) #C2 -> output_size 28x28
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2) #C3 -> 14x14
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2) #C4 -> 7x7
 
-        # 변경 부분
         if block == BasicBlock:
             fpn_channel_sizes = [self.layer1[layers[0] - 1].conv2.out_channels , self.layer2[layers[1] - 1].conv2.out_channels, self.layer3[layers[2] - 1].conv2.out_channels,
                          self.layer4[layers[3] - 1].conv2.out_channels]
@@ -285,8 +256,13 @@ class ResNet(nn.Module):
         else:
             raise ValueError(f"Block type {block} not understood")
 
-        self.fpn = Nodefeats_make(fpn_channel_sizes)
 
+        self.Nodefeats_make = Nodefeats_make(fpn_channel_sizes) # 백본으로 부터 나온 feature map들의 채널사이즈를 입력으로 받아서 node_feature를 생성하는 부분
+        # GCN_FPN input -> 통합된 피쳐맵의 채널사이즈, activation , dorpout, fmap_size, num_node
+        self.GCN_FPN = GCN_FPN(self.node_channel_size,self.relu, 0.2, 6)
+
+
+        #
         self.regressionModel = RegressionModel(256) # 256 차원이라..
         self.classificationModel = ClassificationModel(256, num_classes=num_classes)
 
@@ -329,8 +305,9 @@ class ResNet(nn.Module):
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
             layers.append(block(self.inplanes, planes))
-
+        # 마지막 블록의 conv2 의 out channel을 따로 뽑아낼 수 있음
         return nn.Sequential(*layers)
+
 
     def freeze_bn(self):
         '''Freeze BatchNorm layers.'''
@@ -354,9 +331,15 @@ class ResNet(nn.Module):
         x2 = self.layer2(x1)
         x3 = self.layer3(x2)
         x4 = self.layer4(x3)
+        # 이부분을 짜야함
+        # 구현이 어려운 이유가 backbone, neck, head가 모두 한부분으로 연결되어있음
+        Node_features = self.Nodefeats_make([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
 
-        Node_features, origin_features = self.Nodefeats_make([x1, x2, x3, x4]) # FPN으로 부터 feature 추출 -> 나중에 이거 기반으로 컨트롤좀 해보기
-        GCN_FPN_features = self.GCN_FPN(Node_features,origin_features, 256, 256) # Node_features -> [C1 ~ C6], 일단은 in channel을 256, out_channel을 256이라 가정하고 진행하자
+        # 어쨌거나 그래프와 node_features만 인풋으로 넣어주면 되는거아님?
+        GCN_FPN_features = self.GCN_FPN(Node_features) # Node_features -> [C1 ~ C6]
+
+
+
         regression = torch.cat([self.regressionModel(feature) for feature in GCN_FPN_features], dim=1)
 
         classification = torch.cat([self.classificationModel(feature) for feature in GCN_FPN_features], dim=1)

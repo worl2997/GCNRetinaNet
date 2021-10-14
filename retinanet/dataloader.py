@@ -347,6 +347,7 @@ class Resizer(object):
         smallest_side = min(rows, cols)
 
         # rescale the image so the smallest side is min_side
+        # 608 / 실제 이미지 크기
         scale = min_side / smallest_side
 
         # check if the largest side is now greater than max_side, which can happen
@@ -365,7 +366,7 @@ class Resizer(object):
 
         new_image = np.zeros((rows + pad_w, cols + pad_h, cns)).astype(np.float32)
         new_image[:rows, :cols, :] = image.astype(np.float32)
-
+        # 넘겨 주는 이미지 크기 -> [torch, row, col ,cns ]
         annots[:, :4] *= scale
 
         return {'img': torch.from_numpy(new_image), 'annot': torch.from_numpy(annots), 'scale': scale}
